@@ -1,0 +1,32 @@
+import { IStorageProvider } from './storage.interface';
+import { LocalStorageService } from './local-storage.service';
+import { S3StorageService } from './s3-storage.service';
+
+export class StorageFactory {
+  private static instance: IStorageProvider;
+
+  public static getStorageProvider(): IStorageProvider {
+    if (this.instance) {
+      return this.instance;
+    }
+
+    const providerType = (process.env.STORAGE_PROVIDER || 'local').toLowerCase();
+    const hasAwsConfig = !!(process.env.AWS_REGION && process.env.S3_BUCKET_NAME);
+
+    if (providerType === 's3' && hasAwsConfig) {
+      console.log(`[StorageFactory] Initializing Amazon S3 Storage Adapter (Bucket: ${process.env.S3_BUCKET_NAME}, Region: ${process.env.AWS_REGION})`);
+      this.instance = new S3StorageService({
+        region: process.env.AWS_REGION || 'us-east-1',
+        bucketName: process.env.S3_BUCKET_NAME!,
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        sessionToken: process.env.AWS_SESSION_TOKEN,
+      });
+    } else {
+      console.log('[StorageFactory] Initializing Local Object Storage Adapter (.storage/s3-bucket)');
+      this.instance = new LocalStorageService();
+    }
+
+    return this.instance;
+  }
+}

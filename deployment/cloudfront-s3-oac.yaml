@@ -1,0 +1,126 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'SecureVault Cloud - S3 Private Website Hosting with CloudFront Origin Access Control (OAC) and HTTPS'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'securevault-cloud'
+    Description: 'Base name prefix for resources'
+
+  Environment:
+    Type: String
+    Default: 'production'
+    AllowedValues: ['development', 'staging', 'production']
+
+Resources:
+  # 1. Private S3 Bucket for Static Website Distribution
+  WebsiteBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub '${ProjectName}-website-${AWS::AccountId}-${AWS::Region}'
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Project
+          Value: SecureVault-Cloud
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # 2. CloudFront Origin Access Control (OAC)
+  WebsiteOriginAccessControl:
+    Type: 'AWS::CloudFront::OriginAccessControl'
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${ProjectName}-OAC'
+        Description: 'Origin Access Control for SecureVault private website bucket'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # 3. CloudFront Global Distribution
+  WebsiteCloudFrontDistribution:
+    Type: 'AWS::CloudFront::Distribution'
+    DependsOn:
+      - WebsiteBucket
+      - WebsiteOriginAccessControl
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: 'SecureVault Cloud static dashboard website'
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+
+        Origins:
+          - Id: S3WebsiteOrigin
+            DomainName: !GetAtt WebsiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt WebsiteOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: '' # Empty when using OAC
+
+        DefaultCacheBehavior:
+          TargetOriginId: S3WebsiteOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: ['GET', 'HEAD', 'OPTIONS']
+          CachedMethods: ['GET', 'HEAD']
+          Compress: true
+          # Managed-CachingOptimized Cache Policy ID
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+
+        # SPA Routing: Redirect 403/404 to index.html with 200 OK
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 10
+
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+          MinimumProtocolVersion: TLSv1.2_2021
+
+  # 4. S3 Bucket Policy allowing CloudFront OAC Read Access
+  WebsiteBucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref WebsiteBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontServicePrincipalReadOnly
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: 's3:GetObject'
+            Resource: !Sub '${WebsiteBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${WebsiteCloudFrontDistribution.Id}'
+
+Outputs:
+  WebsiteBucketName:
+    Description: 'S3 Website Bucket Name'
+    Value: !Ref WebsiteBucket
+
+  CloudFrontDistributionId:
+    Description: 'CloudFront Distribution ID'
+    Value: !Ref WebsiteCloudFrontDistribution.Id
+
+  CloudFrontDomainName:
+    Description: 'CloudFront Distribution Domain Name'
+    Value: !GetAtt WebsiteCloudFrontDistribution.DomainName
+
+  CloudFrontUrl:
+    Description: 'Secure HTTPS Website URL'
+    Value: !Sub 'https://${WebsiteCloudFrontDistribution.DomainName}'
